@@ -1,0 +1,19 @@
+.idea
+.idea/
+.claude
+.claude/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+frontend/dist/
+
+# Environment
+.env

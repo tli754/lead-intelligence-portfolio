@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Wholesale Enquiries — Acme Outdoor Gear</title>
+</head>
+<body>
+  <main>
+    <h1>Become a Stockist</h1>
+    <p>We work with independent retailers around the world. Fill in the form below to apply.</p>
+    <form action="/wholesale/apply" method="post">
+      <label for="company">Company name</label>
+      <input type="text" id="company" name="company">
+      <label for="volume">Expected monthly volume</label>
+      <select id="volume" name="volume">
+        <option value="small">Under 50 units</option>
+        <option value="large">Over 50 units</option>
+      </select>
+      <button type="submit">Apply</button>
+    </form>
+    <table>
+      <thead><tr><th>Tier</th><th>Minimum order</th><th>Discount</th></tr></thead>
+      <tbody>
+        <tr><td>Bronze</td><td>10 units</td><td>10%</td></tr>
+        <tr><td>Silver</td><td>50 units</td><td>20%</td></tr>
+      </tbody>
+    </table>
+  </main>
+</body>
+</html>

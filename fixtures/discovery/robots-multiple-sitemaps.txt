@@ -1,0 +1,10 @@
+User-agent: *
+Disallow: /cart
+Disallow: /checkout
+
+User-agent: BadBot
+Disallow: /
+
+SITEMAP: https://summitoutfitters.example.com/sitemap-index.xml
+Sitemap: https://summitoutfitters.example.com/sitemap-pages.xml
+sitemap: https://summitoutfitters.example.com/sitemap-products.xml

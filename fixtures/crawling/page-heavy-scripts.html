@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Heavy Scripts Page</title>
+  <script nonce="n0nc3abc123" integrity="sha384-abcdef0123456789">
+    console.log("tracking init");
+    window.dataLayer = window.dataLayer || [];
+  </script>
+  <script src="https://www.google-analytics.com/analytics.js"></script>
+  <script src="https://www.googletagmanager.com/gtm.js?id=GTM-ABCDEF"></script>
+  <script src="https://connect.facebook.net/en_US/fbevents.js"></script>
+</head>
+<body onload="trackPageView()">
+  <div onclick="handleClick()" onmouseover="handleHover()">
+    <h1>Sale ends soon</h1>
+    <p>Shop our end-of-season sale before it's gone.</p>
+  </div>
+  <img src="https://tracker.example.com/pixel.gif" width="1" height="1" alt="">
+  <img src="/images/hero.jpg" alt="Hiking boots on a rocky trail">
+  <script>
+    for (let i = 0; i < 500; i++) {
+      console.log("noisy script line " + i);
+    }
+  </script>
+  <script type="application/json" id="hydration-data">
+    {"props": {"pageProps": {"noise": true}}}
+  </script>
+  <noscript>Please enable JavaScript to use this site.</noscript>
+</body>
+</html>

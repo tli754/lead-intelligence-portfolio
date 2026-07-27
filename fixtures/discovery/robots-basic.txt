@@ -1,0 +1,5 @@
+User-agent: *
+Disallow: /admin
+Allow: /admin/public
+
+Sitemap: https://summitoutfitters.example.com/sitemap.xml
