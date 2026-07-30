@@ -103,6 +103,11 @@ class ExtractionRunEnvelope(CamelCaseModel):
     data: ExtractionRunResponse
 
 
+class ExtractionRunListResponse(CamelCaseModel):
+    data: list[ExtractionRunResponse]
+    pagination: PaginationMeta
+
+
 def run_to_response(run: ExtractionRun) -> ExtractionRunResponse:
     return ExtractionRunResponse(
         extraction_run_id=run.extraction_run_id,

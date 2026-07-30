@@ -163,6 +163,20 @@ class FakeExtractionRepository(ExtractionRepository):
         start = (page - 1) * page_size
         return ExtractionRunPage(items=items[start : start + page_size], total=len(items))
 
+    async def list_runs(
+        self,
+        *,
+        status=None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> ExtractionRunPage:
+        items = sorted(self.runs.values(), key=lambda r: r.created_at, reverse=True)
+        if status is not None:
+            items = [run for run in items if run.status == status]
+        total = len(items)
+        start = (page - 1) * page_size
+        return ExtractionRunPage(items=items[start : start + page_size], total=total)
+
     async def find_active_or_completed_run(
         self, company_id: str, idempotency_key: str
     ) -> ExtractionRun | None:

@@ -9,13 +9,15 @@ data (see `backend/tests/conftest.py`).
 
 ## Collections
 
-### `companies`
+### `companies` (removed)
 
 The first collection in the system, created by the paste-in importer
-feature. Holds one document per imported store/domain. Fields are
-limited to exactly what this feature populates — no speculative
-scoring/status/qualification fields are added ahead of the feature that
-actually needs them.
+feature. Held one document per imported store/domain. **Removed**: it
+became dead weight once `modules/imports`' UI superseded the paste-in
+importer (Task 014; see ADR 0002's addendum) and was dropped, along with
+its `domains/companies` module, once it held zero documents. Kept here
+for historical reference only — `companies_pipeline` below is the
+current, only `Company` collection.
 
 ```
 {
@@ -269,7 +271,13 @@ document rather than duplicating it.
   started_at: datetime | null,          # UTC, indexed
   completed_at: datetime | null,        # UTC
 
-  configuration_snapshot: object,        # the CrawlConfig/options this run was created with
+  configuration_snapshot: object,        # the CrawlConfig this run was created with
+  options_snapshot: object,              # Task 017: the full CrawlRunOptions (force_refresh,
+                                          # include_page_types, exclude_page_types, manual_urls)
+                                          # this run was enqueued with — persisted so
+                                          # `execute_crawl_run` can recover the caller's actual
+                                          # options across the enqueue/execute split, rather than
+                                          # falling back to defaults
   summary: {
     targets_selected: int, pages_fetched: int, pages_unchanged: int,
     pages_skipped: int, pages_blocked_by_robots: int, pages_failed: int,

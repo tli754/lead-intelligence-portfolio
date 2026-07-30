@@ -22,7 +22,7 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
-from app.modules.crawling.domain.enums import FetchMode, PageFetchStatus
+from app.modules.crawling.domain.enums import CrawlStatus, FetchMode, PageFetchStatus
 from app.modules.crawling.domain.models import CrawledPage, CrawlRun, CrawlTarget
 from app.modules.crawling.domain.repository import (
     CrawledPagePage,
@@ -98,6 +98,7 @@ class MongoCrawlRepository(CrawlRepository):
         await self._runs.create_index("discovery_run_id")
         await self._runs.create_index("status")
         await self._runs.create_index("started_at")
+        await self._runs.create_index("created_at")
 
         await self._targets.create_index("crawl_target_id", unique=True)
         await self._targets.create_index([("crawl_run_id", 1), ("normalized_url", 1)], unique=True)
@@ -144,6 +145,23 @@ class MongoCrawlRepository(CrawlRepository):
         self, company_id: str, *, page: int = 1, page_size: int = 20
     ) -> CrawlRunPage:
         query = {"company_id": company_id}
+        total = await self._runs.count_documents(query)
+        skip = (page - 1) * page_size
+        cursor = self._runs.find(query).sort("created_at", -1).skip(skip).limit(page_size)
+        items = [_run_from_document(document) async for document in cursor]
+        return CrawlRunPage(items=items, total=total)
+
+    async def list_runs(
+        self,
+        *,
+        status: CrawlStatus | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> CrawlRunPage:
+        query: dict = {}
+        if status is not None:
+            query["status"] = status.value
+
         total = await self._runs.count_documents(query)
         skip = (page - 1) * page_size
         cursor = self._runs.find(query).sort("created_at", -1).skip(skip).limit(page_size)

@@ -175,6 +175,32 @@ describe("listCompanies", () => {
     expect(requestedUrl).not.toContain("order=");
   });
 
+  it("sends pageSize as a query param when passed as the second argument", async () => {
+    const fetchMock = stubFetch(
+      new Response(JSON.stringify({ data: [], pagination: { page: 1, pageSize: 200, total: 0 } }), {
+        status: 200,
+      }),
+    );
+
+    await listCompanies({}, 200);
+
+    const requestedUrl = fetchMock.mock.calls[0][0] as string;
+    expect(requestedUrl).toContain("pageSize=200");
+  });
+
+  it("omits pageSize entirely when not passed", async () => {
+    const fetchMock = stubFetch(
+      new Response(JSON.stringify({ data: [], pagination: { page: 1, pageSize: 20, total: 0 } }), {
+        status: 200,
+      }),
+    );
+
+    await listCompanies({});
+
+    const requestedUrl = fetchMock.mock.calls[0][0] as string;
+    expect(requestedUrl).not.toContain("pageSize");
+  });
+
   it("throws CompanyListRequestError on a non-2xx response", async () => {
     const errorBody = JSON.stringify({ detail: "processingStatus is not a valid enum value" });
     vi.stubGlobal(

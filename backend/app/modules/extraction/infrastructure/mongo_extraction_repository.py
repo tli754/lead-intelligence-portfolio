@@ -25,7 +25,7 @@ from typing import Any
 from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
-from app.modules.extraction.domain.enums import FactStatus, VerificationState
+from app.modules.extraction.domain.enums import ExtractionStatus, FactStatus, VerificationState
 from app.modules.extraction.domain.field_catalogue import FieldPath
 from app.modules.extraction.domain.models import (
     ExtractionRun,
@@ -89,6 +89,7 @@ class MongoExtractionRepository(ExtractionRepository):
         await self._runs.create_index("crawl_run_id")
         await self._runs.create_index("status")
         await self._runs.create_index("started_at")
+        await self._runs.create_index("created_at")
 
         await self._executions.create_index("extractor_execution_id", unique=True)
         await self._executions.create_index("extraction_run_id")
@@ -151,6 +152,23 @@ class MongoExtractionRepository(ExtractionRepository):
         self, company_id: str, *, page: int = 1, page_size: int = 20
     ) -> ExtractionRunPage:
         query = {"company_id": company_id}
+        total = await self._runs.count_documents(query)
+        skip = (page - 1) * page_size
+        cursor = self._runs.find(query).sort("created_at", -1).skip(skip).limit(page_size)
+        items = [ExtractionRun.model_validate(_strip_id(document)) async for document in cursor]
+        return ExtractionRunPage(items=items, total=total)
+
+    async def list_runs(
+        self,
+        *,
+        status: ExtractionStatus | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> ExtractionRunPage:
+        query: dict = {}
+        if status is not None:
+            query["status"] = status.value
+
         total = await self._runs.count_documents(query)
         skip = (page - 1) * page_size
         cursor = self._runs.find(query).sort("created_at", -1).skip(skip).limit(page_size)

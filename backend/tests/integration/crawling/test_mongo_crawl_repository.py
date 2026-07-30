@@ -202,6 +202,55 @@ class TestRunCrud:
         assert page.total == 2
         assert len(page.items) == 2
 
+    async def test_list_runs_returns_all_runs_across_companies(
+        self, repository: MongoCrawlRepository
+    ) -> None:
+        await repository.create_run(_make_run(idempotency_key="a"))
+        run_b = _make_run(idempotency_key="b")
+        run_b.company_id = "company-2"
+        await repository.create_run(run_b)
+
+        page = await repository.list_runs()
+
+        assert page.total == 2
+        assert len(page.items) == 2
+
+    async def test_list_runs_filters_by_status(self, repository: MongoCrawlRepository) -> None:
+        await repository.create_run(_make_run(idempotency_key="a", status=CrawlStatus.COMPLETED))
+        await repository.create_run(_make_run(idempotency_key="b", status=CrawlStatus.FAILED))
+
+        page = await repository.list_runs(status=CrawlStatus.FAILED)
+
+        assert page.total == 1
+        assert page.items[0].status == CrawlStatus.FAILED
+
+    async def test_list_runs_with_no_matches_returns_empty_page(
+        self, repository: MongoCrawlRepository
+    ) -> None:
+        await repository.create_run(_make_run(status=CrawlStatus.COMPLETED))
+
+        page = await repository.list_runs(status=CrawlStatus.FAILED)
+
+        assert page.total == 0
+        assert page.items == []
+
+    async def test_list_runs_sorted_by_created_at_descending(
+        self, repository: MongoCrawlRepository
+    ) -> None:
+        older = _make_run(idempotency_key="older")
+        older.created_at = datetime(2024, 1, 1, tzinfo=UTC)
+        newer = _make_run(idempotency_key="newer")
+        newer.created_at = datetime(2024, 6, 1, tzinfo=UTC)
+        await repository.create_run(older)
+        await repository.create_run(newer)
+
+        page = await repository.list_runs()
+
+        assert [run.crawl_run_id for run in page.items] == [
+            newer.crawl_run_id,
+            older.crawl_run_id,
+        ]
+
 
 class TestTargetCrud:
     async def test_save_and_find_target(self, repository: MongoCrawlRepository) -> None:

@@ -12,9 +12,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.db import get_database
-from app.domains.companies.repository import CompanyRepository
-from app.domains.companies.router import router as companies_router
 from app.domains.health.router import router as health_router
+from app.domains.queue_stats.router import router as queue_stats_router
 from app.modules.companies.api.router import router as companies_module_router
 from app.modules.companies.infrastructure.mongo_repository import MongoCompanyRepository
 from app.modules.crawling.api.router import router as crawling_router
@@ -37,7 +36,6 @@ settings = get_settings()
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Ensure MongoDB indexes exist before the app starts serving traffic."""
-    await CompanyRepository(get_database()).ensure_indexes()
     await MongoCompanyRepository(get_database()).ensure_indexes()
     await MongoDiscoveryRepository(get_database()).ensure_indexes()
     await MongoCrawlRepository(get_database()).ensure_indexes()
@@ -57,10 +55,10 @@ app.add_middleware(
 )
 
 app.include_router(health_router)
-app.include_router(companies_router)
 app.include_router(companies_module_router)
 app.include_router(discovery_router)
 app.include_router(crawling_router)
 app.include_router(evidence_router)
 app.include_router(extraction_router)
 app.include_router(imports_router)
+app.include_router(queue_stats_router)

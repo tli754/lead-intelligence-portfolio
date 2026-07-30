@@ -155,6 +155,69 @@ async def test_get_fact_not_found_returns_404(client: AsyncClient):
 
 
 @pytest.mark.asyncio
+async def test_list_extraction_runs_response_shape_and_pagination(
+    client: AsyncClient, extraction_repository: FakeExtractionRepository
+):
+    from app.modules.extraction.domain.models import ExtractionRun
+
+    await extraction_repository.create_run(
+        ExtractionRun(
+            company_id="company-1",
+            crawl_run_id="crawl-run-1",
+            idempotency_key="key-a",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+
+    response = await client.get("/api/extraction-runs", params={"page": 1, "pageSize": 10})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body.keys()) == {"data", "pagination"}
+    assert set(body["pagination"].keys()) == {"page", "pageSize", "total"}
+    assert body["pagination"]["total"] == 1
+    assert "extractionRunId" in body["data"][0]
+
+
+@pytest.mark.asyncio
+async def test_list_extraction_runs_status_filter(
+    client: AsyncClient, extraction_repository: FakeExtractionRepository
+):
+    from app.modules.extraction.domain.enums import ExtractionStatus
+    from app.modules.extraction.domain.models import ExtractionRun
+
+    await extraction_repository.create_run(
+        ExtractionRun(
+            company_id="company-1",
+            crawl_run_id="crawl-run-1",
+            status=ExtractionStatus.COMPLETED,
+            idempotency_key="key-a",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+    await extraction_repository.create_run(
+        ExtractionRun(
+            company_id="company-1",
+            crawl_run_id="crawl-run-1",
+            status=ExtractionStatus.FAILED,
+            idempotency_key="key-b",
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+
+    matching = await client.get("/api/extraction-runs", params={"status": "failed"})
+    assert matching.json()["pagination"]["total"] == 1
+    assert matching.json()["data"][0]["status"] == "failed"
+
+    non_matching = await client.get("/api/extraction-runs", params={"status": "cancelled"})
+    assert non_matching.json()["pagination"]["total"] == 0
+    assert non_matching.json()["data"] == []
+
+
+@pytest.mark.asyncio
 async def test_create_extraction_run_conflict_returns_409(
     client: AsyncClient, extraction_repository, company_gateway, crawl_gateway, evidence_gateway
 ):

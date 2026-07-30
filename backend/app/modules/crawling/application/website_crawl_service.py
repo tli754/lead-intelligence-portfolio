@@ -112,9 +112,16 @@ class WebsiteCrawlService:
 
     # --- Public API -------------------------------------------------------
 
-    async def start_crawl_run(
+    async def enqueue_crawl_run(
         self, company_id: str, discovery_run_id: str, options: CrawlRunOptions | None = None
     ) -> CrawlRun:
+        """Validates the company/discovery-run references and persists a
+        fresh `queued` `CrawlRun` — everything `start_crawl_run` used to do
+        *before* target processing began. No target is selected, no page is
+        fetched, and company `processing.status` is **not** advanced here
+        (see `execute_crawl_run` for why). Its only I/O is the discovery-run
+        existence check and the run's own persistence, so it is safe and
+        fast to run synchronously inside an HTTP request."""
         options = options or CrawlRunOptions()
         effective_config = self._build_effective_config(options)
         idempotency_key = compute_idempotency_key(
@@ -128,22 +135,46 @@ class WebsiteCrawlService:
                 status=existing_active.status.value,
             )
 
-        # Validate both references exist *before* creating anything.
+        # Validate the discovery run reference exists *before* creating anything.
         await self._discovery_gateway.get_discovery_run(discovery_run_id)
-        await self._advance_processing_status(company_id, ProcessingStatus.CRAWLING)
 
-        start = time.monotonic()
         now = datetime.now(UTC)
         run = CrawlRun(
             company_id=company_id,
             discovery_run_id=discovery_run_id,
             configuration_snapshot=effective_config.model_dump(mode="json"),
+            options_snapshot=options.model_dump(mode="json"),
             idempotency_key=idempotency_key,
             created_at=now,
             updated_at=now,
         )
-        run = await self._repository.create_run(run)
+        return await self._repository.create_run(run)
 
+    async def execute_crawl_run(self, crawl_run_id: str) -> CrawlRun:
+        """Runs the actual crawl for a run previously created by
+        `enqueue_crawl_run`, looked up fresh from the repository — callable
+        by a worker with nothing but the `crawl_run_id`. Everything
+        `start_crawl_run` used to do *after* run creation, unchanged in
+        substance."""
+        run = await self._repository.get_run(crawl_run_id)
+        if run is None:
+            raise CrawlRunNotFoundError(crawl_run_id)
+        if run.status == CrawlStatus.CANCELLED:
+            # `cancel_run` was called after `enqueue_crawl_run` but before a
+            # worker ever picked this job up — never process it.
+            return run
+
+        effective_config = CrawlConfig.model_validate(run.configuration_snapshot)
+        # Recovered from `enqueue_crawl_run`'s persisted snapshot, not
+        # hardcoded to defaults — a run enqueued with a non-default
+        # `force_refresh`/`include_page_types`/`exclude_page_types`/
+        # `manual_urls` must still honor those when executed later,
+        # possibly by a separate worker process with nothing but this
+        # `crawl_run_id`.
+        options = CrawlRunOptions.model_validate(run.options_snapshot)
+        await self._advance_processing_status(run.company_id, ProcessingStatus.CRAWLING)
+
+        start = time.monotonic()
         run.status = CrawlStatus.RUNNING
         run.started_at = datetime.now(UTC)
         run.updated_at = run.started_at
@@ -170,6 +201,31 @@ class WebsiteCrawlService:
 
         await self._finish_company_status(run)
         return run
+
+    async def start_crawl_run(
+        self, company_id: str, discovery_run_id: str, options: CrawlRunOptions | None = None
+    ) -> CrawlRun:
+        """Composed convenience, kept for backward compatibility: calls
+        `enqueue_crawl_run` then `execute_crawl_run` in sequence, exactly
+        reproducing the pre-RQ synchronous behavior. Preserved (not
+        deleted) so the existing fakes-based integration suite keeps
+        passing unmodified, and so a non-queue, synchronous code path
+        remains available for local development without a running
+        Redis/worker. The router no longer calls this method."""
+        run = await self.enqueue_crawl_run(company_id, discovery_run_id, options)
+        return await self.execute_crawl_run(run.crawl_run_id)
+
+    async def enqueue_retry(self, crawl_run_id: str) -> CrawlRun:
+        """Marks a terminal-status run `queued` again, immediately, without
+        running any retry logic inline — the actual retry
+        (`retry_failed`) is unchanged in substance, now invoked by a
+        worker instead of inline by the router."""
+        run = await self._repository.get_run(crawl_run_id)
+        if run is None:
+            raise CrawlRunNotFoundError(crawl_run_id)
+        run.status = CrawlStatus.QUEUED
+        run.updated_at = datetime.now(UTC)
+        return await self._repository.update_run(run) or run
 
     async def cancel_run(self, crawl_run_id: str) -> CrawlRun:
         run = await self._repository.mark_run_cancelled(crawl_run_id)

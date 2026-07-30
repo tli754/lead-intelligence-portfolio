@@ -35,16 +35,14 @@ backend/
     domains/
       health/
         router.py          # GET /api/health
-      companies/
-        models.py           # Company, ImportRequest, ImportResponse, ...
-        repository.py       # all MongoDB access for the companies collection
-        service.py           # all business logic (parsing orchestration, dedupe)
-        parsing.py            # pure functions: normalize_domain, detect_format, parsers
-        router.py              # POST /api/companies/import
     modules/
       companies/            # hexagonal variant — see ARCHITECTURE.md's
-                             # "Module convention" section for why this is a
-                             # second, different `Company` model, not the one above
+                             # "Module convention" section. The flat-convention
+                             # `domains/companies` (paste-in importer, `companies`
+                             # collection) that this once coexisted alongside was
+                             # removed as dead weight after Task 014 superseded it
+                             # (see ADR 0002's addendum) — this is now the only
+                             # `Company` model in the codebase.
         domain/              # models.py, enums.py, transitions.py, exceptions.py,
                               # repository.py (interface), normalization.py
         application/          # service.py — depends only on the domain repository interface
@@ -114,12 +112,6 @@ backend/
   tests/
     conftest.py            # shared fixtures: test MongoDB database, HTTP test client
     test_health.py
-    test_company_import.py  # full API integration tests
-    domains/
-      companies/
-        test_parsing.py
-        test_service.py
-        test_repository.py
     modules/
       companies/            # stale — see "Where tests live" below
     unit/
@@ -151,11 +143,6 @@ backend/
       extraction/                  # real-MongoDB integration tests for modules/extraction,
                                     # including test_full_pipeline.py (crawl content ->
                                     # extracted facts with evidence, end to end)
-    fixtures/
-      storeleads_sample.html  # real storelead.app HTML export, used for regression tests
-                               # (Vaadin virtualized-grid markup — domains/companies/parsing.py
-                               # only, a different source format from fixtures/storeleads/ below)
-
 frontend/
   components.json         # shadcn/ui CLI config (style, aliases, theme)
   src/
@@ -205,12 +192,13 @@ docs/
 
 ## Where tests live
 
-Two conventions currently coexist — see the ARCHITECTURE.md fork note:
+Two conventions coexisted here — see ARCHITECTURE.md's (now-resolved) fork
+note. The flat convention's only non-trivial example, `domains/companies`,
+was removed (see ADR 0002's addendum); `domains/health` remains as a
+minimal scaffolding-only domain, tested by the top-level
+`backend/tests/test_health.py` rather than a mirrored `domains/health/`
+test directory.
 
-- **Flat-convention domains** (`backend/app/domains/<name>/`):
-  `backend/tests/` mirrors `backend/app/`'s structure 1:1 (e.g.
-  `backend/app/domains/companies/parsing.py` is tested by
-  `backend/tests/domains/companies/test_parsing.py`).
 - **Hexagonal-convention modules** (`backend/app/modules/<name>/`): tests
   live under `backend/tests/unit/<name>/` (pure domain/application/API-
   schema tests, no MongoDB) and `backend/tests/integration/<name>/`,

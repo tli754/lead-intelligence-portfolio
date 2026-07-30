@@ -80,12 +80,14 @@ containing (as needed):
   domain needs them (e.g. turning pasted text into structured rows).
 - `router.py` — thin FastAPI route handlers.
 
-The first domain implementing this convention is `companies`
+The first domain implementing this convention was `companies`
 (`backend/app/domains/companies/`), created by the paste-in importer
-feature — immutable records in the `companies` collection, one per
-imported store. `health` (`backend/app/domains/health/`) is a minimal
-scaffolding-only domain with just a `router.py`, used to verify the
-backend boots.
+feature — immutable records in a `companies` collection, one per
+imported store. It was removed once Task 014's `modules/imports` UI
+superseded it (see ADR 0002's addendum) — `health`
+(`backend/app/domains/health/`), a minimal scaffolding-only domain with
+just a `router.py` used to verify the backend boots, is now this
+convention's only example.
 
 ## Module convention (hexagonal variant)
 
@@ -111,18 +113,20 @@ organised as **domain → application → infrastructure → api**
 First implementation: `companies` (`backend/app/modules/companies/`) —
 tracks a company through the discovery→scoring pipeline (processing
 status, manual review/workflow status) in its own `companies_pipeline`
-collection. This is a **different `Company` model** from the flat
-`domains/companies` one above, not an extension of it.
+collection. It was originally a **different `Company` model** from the
+flat `domains/companies` one above, not an extension of it.
 
-**This is an unreconciled fork, not a documented decision.** Two
-conventions and two different `Company` models coexist here for
-historical reasons — each was built by a separately-scoped task, not by
-a single design decision. No ADR yet says which convention a new
-module should follow, or whether/how the two `Company` concepts should
-eventually be unified. Read the worked examples for both in
-`docs/architecture/dependency-rules.md` before adding a new domain or
-module, and raise this explicitly with whoever owns the next feature
-that touches `companies` rather than silently picking one.
+**Fork resolved.** Two conventions and two different `Company` models
+coexisted here for historical reasons — each was built by a
+separately-scoped task, not by a single design decision. That was
+resolved by removing `domains/companies` (dead weight once
+`modules/imports`'s UI shipped in Task 014 — see ADR 0002's addendum):
+`modules/companies`' `companies_pipeline` document is now the only
+`Company` model in the codebase. `docs/architecture/dependency-rules.md`'s
+worked example of the flat convention is now historical (the file it
+walks through no longer exists); a new domain still following the flat
+convention should use `domains/health` as its structural reference
+instead.
 
 ### Cross-module dependencies: the gateway/port pattern
 

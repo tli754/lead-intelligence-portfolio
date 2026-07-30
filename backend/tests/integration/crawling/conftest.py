@@ -26,12 +26,14 @@ from app.modules.companies.domain.enums import ProcessingStatus
 from app.modules.crawling.api.router import (
     get_company_crawl_gateway,
     get_content_storage,
+    get_crawl_queue,
     get_crawl_repository,
     get_discovery_crawl_gateway,
     get_page_fetcher,
     get_robots_policy_gateway,
     router,
 )
+from app.modules.crawling.application.website_crawl_service import WebsiteCrawlService
 from app.modules.crawling.domain.content_storage import ContentStorage, NonRawContentKind
 from app.modules.crawling.domain.exceptions import (
     CompanyNotFoundForCrawlError,
@@ -295,6 +297,20 @@ class FakeCrawlRepository(CrawlRepository):
         start = (page - 1) * page_size
         return CrawlRunPage(items=items[start : start + page_size], total=len(items))
 
+    async def list_runs(
+        self,
+        *,
+        status=None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> CrawlRunPage:
+        items = sorted(self.runs.values(), key=lambda run: run.created_at, reverse=True)
+        if status is not None:
+            items = [run for run in items if run.status == status]
+        total = len(items)
+        start = (page - 1) * page_size
+        return CrawlRunPage(items=items[start : start + page_size], total=total)
+
     async def find_active_run(self, company_id: str, idempotency_key: str) -> CrawlRun | None:
         for run in self.runs.values():
             if (
@@ -507,6 +523,47 @@ def content_storage() -> FakeContentStorage:
     return FakeContentStorage()
 
 
+@pytest.fixture
+def crawl_service(
+    company_gateway: FakeCompanyCrawlGateway,
+    discovery_gateway: FakeDiscoveryCrawlGateway,
+    robots_gateway: FakeRobotsPolicyGateway,
+    crawl_repository: FakeCrawlRepository,
+    page_fetcher: FakePageFetcher,
+    content_storage: FakeContentStorage,
+) -> WebsiteCrawlService:
+    """A `WebsiteCrawlService` built from the exact same fakes the `client`
+    fixture's app is wired to (via `app.dependency_overrides`). Since
+    Task 017, the HTTP router only calls `enqueue_crawl_run`/
+    `enqueue_retry` — tests that need a *completed* run (e.g. to assert
+    on response serialization) call `execute_crawl_run`/`retry_failed`
+    on this fixture directly afterward, exactly mirroring what a real
+    RQ worker does via `infrastructure/rq_jobs.py`'s job wrappers."""
+    return WebsiteCrawlService(
+        company_gateway=company_gateway,
+        discovery_gateway=discovery_gateway,
+        robots_gateway=robots_gateway,
+        repository=crawl_repository,
+        page_fetcher=page_fetcher,
+        content_storage=content_storage,
+    )
+
+
+class NoOpQueue:
+    """A `get_crawl_queue` override for tests in this directory that don't
+    care about *what* gets enqueued (only about HTTP response shape or
+    service-level behavior) — records calls without ever touching a real
+    Redis connection. `test_router_rq_enqueue.py` uses its own
+    locally-defined `FakeQueue` instead, where the enqueue call's exact
+    arguments are the thing under test."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def enqueue_call(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+
 def _build_app(
     *,
     company_gateway: CompanyCrawlGateway,
@@ -515,6 +572,7 @@ def _build_app(
     crawl_repository: CrawlRepository,
     page_fetcher: PageFetcher,
     content_storage: ContentStorage,
+    queue: object | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
@@ -524,6 +582,7 @@ def _build_app(
     app.dependency_overrides[get_crawl_repository] = lambda: crawl_repository
     app.dependency_overrides[get_page_fetcher] = lambda: page_fetcher
     app.dependency_overrides[get_content_storage] = lambda: content_storage
+    app.dependency_overrides[get_crawl_queue] = lambda: queue if queue is not None else NoOpQueue()
     return app
 
 
@@ -541,6 +600,7 @@ def client_factory() -> ClientFactory:
         crawl_repository: CrawlRepository,
         page_fetcher: PageFetcher,
         content_storage: ContentStorage,
+        queue: object | None = None,
     ) -> AsyncGenerator[AsyncClient, None]:
         app = _build_app(
             company_gateway=company_gateway,
@@ -549,6 +609,7 @@ def client_factory() -> ClientFactory:
             crawl_repository=crawl_repository,
             page_fetcher=page_fetcher,
             content_storage=content_storage,
+            queue=queue,
         )
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as test_client:

@@ -4,7 +4,9 @@ Deliberately does not infer a platform from the website/domain — only
 normalizes whatever the `platform` column already says.
 """
 
-_KNOWN_PLATFORMS = frozenset({"shopify", "woocommerce", "magento", "custom"})
+_KNOWN_PLATFORMS = frozenset(
+    {"shopify", "woocommerce", "magento", "custom", "prestashop", "opencart"}
+)
 
 
 def normalize_platform(raw: str | None) -> str | None:

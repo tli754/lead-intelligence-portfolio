@@ -1,10 +1,13 @@
 """Integration tests for `WebsiteDiscoveryService`, using the fakes in
 `conftest.py` — no real MongoDB, no real HTTP."""
 
+import pytest
+
 from app.modules.companies.domain.enums import ProcessingStatus
 from app.modules.discovery.application.website_discovery_service import WebsiteDiscoveryService
 from app.modules.discovery.domain.config import DiscoveryConfig
 from app.modules.discovery.domain.enums import DiscoveryStatus
+from app.modules.discovery.domain.exceptions import DiscoveryRunNotFoundError
 
 from .conftest import FakeCompanyDiscoveryGateway, FakeDiscoveryRepository, FakeHttpDiscoveryClient
 
@@ -294,3 +297,75 @@ class TestCancellationBetweenSteps:
         assert run.status == DiscoveryStatus.FAILED
         assert run.error == "cancelled"
         assert discovery_repository._urls == {}
+
+
+class TestEnqueueDiscoveryRunDoesNotExecute:
+    """AC-03 (Task 020): `enqueue_discovery_run` alone never advances
+    company status or performs network I/O."""
+
+    async def test_enqueue_discovery_run_does_not_execute(
+        self,
+        company_gateway: FakeCompanyDiscoveryGateway,
+        discovery_repository: FakeDiscoveryRepository,
+        http_client: FakeHttpDiscoveryClient,
+    ) -> None:
+        service = _service(
+            company_gateway=company_gateway,
+            discovery_repository=discovery_repository,
+            http_client=http_client,
+        )
+
+        run = await service.enqueue_discovery_run("company-1")
+
+        assert run.status == DiscoveryStatus.QUEUED
+        assert run.started_at is None
+        assert company_gateway.status_updates == []
+        assert discovery_repository._urls == {}
+
+
+class TestExecuteDiscoveryRunMatchesRunDiscovery:
+    """AC-04 (Task 020): `execute_discovery_run` given a previously-
+    enqueued run completes exactly as `run_discovery` did, and raises
+    `DiscoveryRunNotFoundError` for an unknown `discovery_run_id`."""
+
+    async def test_execute_discovery_run_matches_run_discovery(
+        self,
+        company_gateway: FakeCompanyDiscoveryGateway,
+        discovery_repository: FakeDiscoveryRepository,
+    ) -> None:
+        http_client = FakeHttpDiscoveryClient(
+            homepage_html=BASIC_HOMEPAGE_HTML,
+            sitemaps={"https://example.com/sitemap.xml": SITEMAP_XML},
+        )
+        service = _service(
+            company_gateway=company_gateway,
+            discovery_repository=discovery_repository,
+            http_client=http_client,
+        )
+
+        enqueued = await service.enqueue_discovery_run("company-1")
+        assert enqueued.status == DiscoveryStatus.QUEUED
+
+        run = await service.execute_discovery_run(enqueued.discovery_run_id)
+
+        assert run.discovery_run_id == enqueued.discovery_run_id
+        assert run.status in (DiscoveryStatus.COMPLETED, DiscoveryStatus.COMPLETED_WITH_WARNINGS)
+        assert run.homepage_url == "https://example.com"
+        assert ("company-1", ProcessingStatus.DISCOVERING) in company_gateway.status_updates
+        assert ("company-1", ProcessingStatus.DISCOVERED) in company_gateway.status_updates
+        assert len(discovery_repository._urls) > 0
+
+    async def test_execute_discovery_run_raises_for_unknown_run(
+        self,
+        company_gateway: FakeCompanyDiscoveryGateway,
+        discovery_repository: FakeDiscoveryRepository,
+        http_client: FakeHttpDiscoveryClient,
+    ) -> None:
+        service = _service(
+            company_gateway=company_gateway,
+            discovery_repository=discovery_repository,
+            http_client=http_client,
+        )
+
+        with pytest.raises(DiscoveryRunNotFoundError):
+            await service.execute_discovery_run("does-not-exist")

@@ -7,7 +7,7 @@ live in `infrastructure/` (e.g. `MongoCrawlRepository`).
 from abc import ABC, abstractmethod
 from typing import NamedTuple
 
-from app.modules.crawling.domain.enums import FetchMode, PageFetchStatus
+from app.modules.crawling.domain.enums import CrawlStatus, FetchMode, PageFetchStatus
 from app.modules.crawling.domain.models import CrawledPage, CrawlRun, CrawlTarget
 from app.modules.discovery.domain.enums import DiscoveryPriority, PageType
 
@@ -63,6 +63,19 @@ class CrawlRepository(ABC):
     async def list_runs_by_company(
         self, company_id: str, *, page: int = 1, page_size: int = 20
     ) -> CrawlRunPage: ...
+
+    @abstractmethod
+    async def list_runs(
+        self,
+        *,
+        status: CrawlStatus | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> CrawlRunPage:
+        """Lists `CrawlRun`s across all companies, sorted by `created_at`
+        descending — the cross-company counterpart to `list_runs_by_company`,
+        used by the jobs-page listing endpoint (`GET /api/crawl-runs`)."""
+        ...
 
     @abstractmethod
     async def find_active_run(self, company_id: str, idempotency_key: str) -> CrawlRun | None:

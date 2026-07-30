@@ -2,10 +2,20 @@
 enum serialization, no raw-HTML/no-filesystem-path leakage, filter
 correctness (AC-34, AC-35). No real MongoDB, no real network — a locally-
 scoped FastAPI app built by `conftest.py`'s `client_factory`.
+
+Since Task 017 (`docs/contracts/active/017-rq-crawling-vertical-slice.md`),
+`POST .../crawl-runs` enqueues execution via RQ instead of running it
+inline, so `_create_run` below drives `execute_crawl_run` directly
+against the `crawl_service` fixture (the same fakes the HTTP app is
+wired to) after creating the run over HTTP — exactly what a real worker
+does via `run_crawl_execution`. This file only tests HTTP response
+*serialization*, not the enqueue/execute split itself (see
+`test_router_rq_enqueue.py` for that).
 """
 
 from httpx import AsyncClient
 
+from app.modules.crawling.application.website_crawl_service import WebsiteCrawlService
 from app.modules.discovery.domain.enums import DiscoveryPriority, DiscoverySource, PageType
 
 from .conftest import (
@@ -35,13 +45,20 @@ def _html_response(status_code: int = 200, body: bytes = b"<html><body><h1>Hi</h
     )
 
 
-async def _create_run(client: AsyncClient) -> dict:
+async def _create_run(client: AsyncClient, crawl_service: WebsiteCrawlService) -> dict:
     response = await client.post(
         "/api/companies/company-1/crawl-runs",
         json={"discoveryRunId": "discovery-1"},
     )
     assert response.status_code == 201
-    return response.json()
+    queued_body = response.json()
+    assert queued_body["data"]["status"] == "queued"
+
+    await crawl_service.execute_crawl_run(queued_body["data"]["crawlRunId"])
+
+    completed_response = await client.get(f"/api/crawl-runs/{queued_body['data']['crawlRunId']}")
+    assert completed_response.status_code == 200
+    return completed_response.json()
 
 
 class TestCamelCaseAndPagination:
@@ -50,6 +67,7 @@ class TestCamelCaseAndPagination:
         client: AsyncClient,
         discovery_gateway: FakeDiscoveryCrawlGateway,
         page_fetcher: FakePageFetcher,
+        crawl_service: WebsiteCrawlService,
     ) -> None:
         discovery_gateway._urls.append(
             make_discovered_url(
@@ -62,7 +80,7 @@ class TestCamelCaseAndPagination:
         )
         page_fetcher.set_response(HOMEPAGE_URL, _html_response())
 
-        run_body = await _create_run(client)
+        run_body = await _create_run(client, crawl_service)
         assert "crawlRunId" in run_body["data"]
         assert "targetsSelected" in run_body["data"]["summary"]
 
@@ -88,6 +106,7 @@ class TestNoLeakage:
         discovery_gateway: FakeDiscoveryCrawlGateway,
         page_fetcher: FakePageFetcher,
         content_storage: FakeContentStorage,
+        crawl_service: WebsiteCrawlService,
     ) -> None:
         discovery_gateway._urls.append(
             make_discovered_url(
@@ -100,7 +119,7 @@ class TestNoLeakage:
         long_text_body = b"<html><body>" + b"<p>" + (b"word " * 5000) + b"</p></body></html>"
         page_fetcher.set_response(HOMEPAGE_URL, _html_response(body=long_text_body))
 
-        run_body = await _create_run(client)
+        run_body = await _create_run(client, crawl_service)
         crawl_run_id = run_body["data"]["crawlRunId"]
 
         pages_response = await client.get(f"/api/crawl-runs/{crawl_run_id}/pages")
@@ -121,6 +140,7 @@ class TestEnumSerialization:
         client: AsyncClient,
         discovery_gateway: FakeDiscoveryCrawlGateway,
         page_fetcher: FakePageFetcher,
+        crawl_service: WebsiteCrawlService,
     ) -> None:
         discovery_gateway._urls.append(
             make_discovered_url(
@@ -132,7 +152,7 @@ class TestEnumSerialization:
         )
         page_fetcher.set_response(HOMEPAGE_URL, _html_response())
 
-        run_body = await _create_run(client)
+        run_body = await _create_run(client, crawl_service)
         assert run_body["data"]["status"] in (
             "completed",
             "completed_with_warnings",
@@ -154,6 +174,7 @@ class TestPageListFilters:
         discovery_gateway: FakeDiscoveryCrawlGateway,
         robots_gateway: FakeRobotsPolicyGateway,
         page_fetcher: FakePageFetcher,
+        crawl_service: WebsiteCrawlService,
     ) -> None:
         from app.modules.crawling.domain.exceptions import TimeoutFetchError
 
@@ -183,7 +204,7 @@ class TestPageListFilters:
         page_fetcher.set_response(ABOUT_URL, _html_response())
         page_fetcher.set_response(CONTACT_URL, TimeoutFetchError(CONTACT_URL))
 
-        run_body = await _create_run(client)
+        run_body = await _create_run(client, crawl_service)
         crawl_run_id = run_body["data"]["crawlRunId"]
 
         default_response = await client.get(f"/api/crawl-runs/{crawl_run_id}/pages")
@@ -207,13 +228,13 @@ class TestPageListFilters:
         assert by_status.json()["pagination"]["total"] == 1
 
 
-class TestCancelAndRetryEndpoints:
-    async def test_cancel_then_get_run_reflects_status(
+class TestListCrawlRuns:
+    async def test_response_shape_and_pagination(
         self,
         client: AsyncClient,
         discovery_gateway: FakeDiscoveryCrawlGateway,
         page_fetcher: FakePageFetcher,
-        crawl_repository: FakeCrawlRepository,
+        crawl_service: WebsiteCrawlService,
     ) -> None:
         discovery_gateway._urls.append(
             make_discovered_url(
@@ -224,7 +245,65 @@ class TestCancelAndRetryEndpoints:
             )
         )
         page_fetcher.set_response(HOMEPAGE_URL, _html_response())
-        run_body = await _create_run(client)
+        await _create_run(client, crawl_service)
+
+        response = await client.get("/api/crawl-runs", params={"page": 1, "pageSize": 10})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert set(body.keys()) == {"data", "pagination"}
+        assert set(body["pagination"].keys()) == {"page", "pageSize", "total"}
+        assert body["pagination"]["total"] >= 1
+        assert "crawlRunId" in body["data"][0]
+
+    async def test_status_filter(
+        self,
+        client: AsyncClient,
+        discovery_gateway: FakeDiscoveryCrawlGateway,
+        page_fetcher: FakePageFetcher,
+        crawl_service: WebsiteCrawlService,
+    ) -> None:
+        discovery_gateway._urls.append(
+            make_discovered_url(
+                discovery_run_id="discovery-1",
+                url=HOMEPAGE_URL,
+                page_type=PageType.HOMEPAGE,
+                priority=DiscoveryPriority.PRIORITY_1,
+            )
+        )
+        page_fetcher.set_response(HOMEPAGE_URL, _html_response())
+        run_body = await _create_run(client, crawl_service)
+        run_status = run_body["data"]["status"]
+
+        matching = await client.get("/api/crawl-runs", params={"status": run_status})
+        assert matching.json()["pagination"]["total"] >= 1
+        assert all(item["status"] == run_status for item in matching.json()["data"])
+
+        other_status = "failed" if run_status != "failed" else "completed"
+        non_matching = await client.get("/api/crawl-runs", params={"status": other_status})
+        assert non_matching.json()["pagination"]["total"] == 0
+        assert non_matching.json()["data"] == []
+
+
+class TestCancelAndRetryEndpoints:
+    async def test_cancel_then_get_run_reflects_status(
+        self,
+        client: AsyncClient,
+        discovery_gateway: FakeDiscoveryCrawlGateway,
+        page_fetcher: FakePageFetcher,
+        crawl_repository: FakeCrawlRepository,
+        crawl_service: WebsiteCrawlService,
+    ) -> None:
+        discovery_gateway._urls.append(
+            make_discovered_url(
+                discovery_run_id="discovery-1",
+                url=HOMEPAGE_URL,
+                page_type=PageType.HOMEPAGE,
+                priority=DiscoveryPriority.PRIORITY_1,
+            )
+        )
+        page_fetcher.set_response(HOMEPAGE_URL, _html_response())
+        run_body = await _create_run(client, crawl_service)
         crawl_run_id = run_body["data"]["crawlRunId"]
 
         cancel_response = await client.post(f"/api/crawl-runs/{crawl_run_id}/cancel")

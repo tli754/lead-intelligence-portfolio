@@ -17,3 +17,7 @@ frontend/dist/
 
 # Environment
 .env
+
+# Crawl content storage (runtime output, see backend/app/modules/crawling/domain/config.py)
+/data/
+/backend/data/

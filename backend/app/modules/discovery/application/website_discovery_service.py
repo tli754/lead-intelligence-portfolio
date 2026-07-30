@@ -2,8 +2,18 @@
 
 Depends only on the domain layer's ports (`CompanyDiscoveryGateway`,
 `DiscoveryRepository`, `HttpDiscoveryClient`) — never a concrete Mongo
-class or `httpx` directly, and never imports FastAPI. A future worker
-can call `run_discovery` exactly as the synchronous API route does.
+class or `httpx` directly, and never imports FastAPI.
+
+Since Task 020 (`docs/contracts/active/020-rq-discovery-vertical-
+slice.md`), the work `run_discovery` used to do in one call is split
+into `enqueue_discovery_run` (fast: persists a `queued` `DiscoveryRun`,
+no network I/O — safe to call synchronously from an HTTP request) and
+`execute_discovery_run` (the actual homepage/robots/sitemap pipeline,
+re-anchored on a `discovery_run_id` looked up fresh from the repository —
+callable by an RQ worker with nothing but that id, per
+`infrastructure/rq_jobs.py`). `run_discovery` is kept as a thin composed
+wrapper of the two, unchanged in external behavior, for backward
+compatibility and for local development without a running Redis/worker.
 """
 
 import logging
@@ -20,7 +30,7 @@ from app.modules.discovery.domain.domain_relationships import (
     is_same_registrable_domain,
 )
 from app.modules.discovery.domain.enums import DiscoverySource, DiscoveryStatus
-from app.modules.discovery.domain.exceptions import DiscoveryFetchError
+from app.modules.discovery.domain.exceptions import DiscoveryFetchError, DiscoveryRunNotFoundError
 from app.modules.discovery.domain.gateway import CompanyDiscoveryGateway
 from app.modules.discovery.domain.html_link_extractor import (
     ExtractedLink,
@@ -70,24 +80,45 @@ class WebsiteDiscoveryService:
         self._http_client = http_client
         self._config = config or DiscoveryConfig()
 
-    async def run_discovery(
-        self,
-        company_id: str,
-        *,
-        cancellation_check: CancellationCheck | None = None,
-    ) -> DiscoveryRun:
-        start = time.monotonic()
+    async def enqueue_discovery_run(self, company_id: str) -> DiscoveryRun:
+        """Validates the company reference and persists a fresh `queued`
+        `DiscoveryRun` — everything `run_discovery` used to do *before*
+        execution started. No homepage resolution, robots/sitemap fetch, or
+        link extraction is attempted here, and company `processing.status`
+        is **not** advanced here (see `execute_discovery_run` for why).
+        This method's only I/O is the company-domain lookup and the run's
+        own persistence, so it is safe and fast to run synchronously inside
+        an HTTP request."""
         now = datetime.now(UTC)
-
         root_domain = await self._company_gateway.get_company_domain(company_id)
 
         run = DiscoveryRun(
             company_id=company_id, root_domain=root_domain, created_at=now, updated_at=now
         )
-        run = await self._repository.create_run(run)
+        return await self._repository.create_run(run)
+
+    async def execute_discovery_run(
+        self,
+        discovery_run_id: str,
+        *,
+        cancellation_check: CancellationCheck | None = None,
+    ) -> DiscoveryRun:
+        """Runs the actual discovery pass for a run previously created by
+        `enqueue_discovery_run`, looked up fresh from the repository —
+        callable by a worker with nothing but the `discovery_run_id`.
+        Everything `run_discovery` used to do *after* run creation,
+        unchanged in substance."""
+        run = await self._repository.get_run(discovery_run_id)
+        if run is None:
+            raise DiscoveryRunNotFoundError(discovery_run_id)
+
+        start = time.monotonic()
+        now = datetime.now(UTC)
+        company_id = run.company_id
+        root_domain = run.root_domain
 
         run.status = DiscoveryStatus.RUNNING
-        run.started_at = datetime.now(UTC)
+        run.started_at = now
         run.updated_at = run.started_at
         run = await self._repository.update_run(run) or run
 
@@ -216,6 +247,24 @@ class WebsiteDiscoveryService:
         await self._company_gateway.update_latest_discovery_run(company_id, run.discovery_run_id)
 
         return run
+
+    async def run_discovery(
+        self,
+        company_id: str,
+        *,
+        cancellation_check: CancellationCheck | None = None,
+    ) -> DiscoveryRun:
+        """Composed convenience, kept for backward compatibility: calls
+        `enqueue_discovery_run` then `execute_discovery_run` in sequence,
+        exactly reproducing the pre-RQ synchronous behavior. Preserved
+        (not deleted) so the existing fakes-based integration suite keeps
+        passing unmodified, and so a non-queue, synchronous code path
+        remains available for local development without a running
+        Redis/worker. The router no longer calls this method."""
+        run = await self.enqueue_discovery_run(company_id)
+        return await self.execute_discovery_run(
+            run.discovery_run_id, cancellation_check=cancellation_check
+        )
 
     def _candidates_from_extraction(
         self, extraction: ExtractionResult, *, root_domain: str

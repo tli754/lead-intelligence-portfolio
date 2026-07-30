@@ -1,24 +1,35 @@
 """HTTP routes for the crawling module.
 
-Built but **not** centrally registered in `backend/app/main.py` — a
-required, out-of-allowed-paths integration step (see the contract's
-Dependencies section), mirroring `modules/imports` and
-`modules/discovery`'s already-unregistered routers. The `POST .../crawl-
-runs` route runs `WebsiteCrawlService.start_crawl_run` synchronously
-inline (no `BackgroundTasks`) — the service itself takes no FastAPI
-types, so a future worker can call it identically.
+Registered in `backend/app/main.py` alongside the other pipeline
+routers. Since Task 017 (`docs/contracts/active/017-rq-crawling-vertical-
+slice.md`), `POST .../crawl-runs` and `POST .../retry-failed` enqueue
+work onto the `"crawling"` RQ queue (`app.queue.get_queue`) instead of
+running it inline: the route only calls `WebsiteCrawlService.enqueue_crawl_run`/
+`enqueue_retry` (fast, no crawl network I/O) and returns a `queued` run
+immediately. The actual crawl/retry execution
+(`WebsiteCrawlService.execute_crawl_run`/`retry_failed`) runs on a
+separate `app.worker` process via the job wrappers in
+`infrastructure/rq_jobs.py`. `WebsiteCrawlService.start_crawl_run` is
+still available (a thin composed wrapper of the two enqueue/execute
+halves) for local development without a running Redis/worker, but the
+router no longer calls it.
 """
 
+import logging
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from rq import Queue
+from rq.exceptions import NoSuchJobError
+from rq.job import Job
 
 from app.db import get_database
 from app.modules.companies.api.router import get_company_service
 from app.modules.companies.application.service import CompanyService
 from app.modules.crawling.api.schemas import (
     CrawlRunEnvelope,
+    CrawlRunListResponse,
     CrawlTargetListResponse,
     CreateCrawlRunRequest,
     PageEnvelope,
@@ -31,7 +42,7 @@ from app.modules.crawling.api.schemas import (
 from app.modules.crawling.application.website_crawl_service import WebsiteCrawlService
 from app.modules.crawling.domain.config import CrawlConfig
 from app.modules.crawling.domain.content_storage import ContentStorage
-from app.modules.crawling.domain.enums import FetchMode, PageFetchStatus
+from app.modules.crawling.domain.enums import CrawlStatus, FetchMode, PageFetchStatus
 from app.modules.crawling.domain.exceptions import (
     CompanyNotFoundForCrawlError,
     CrawlRunNotFoundError,
@@ -59,6 +70,9 @@ from app.modules.crawling.infrastructure.mongo_crawl_repository import MongoCraw
 from app.modules.discovery.api.router import get_discovery_repository
 from app.modules.discovery.domain.enums import DiscoveryPriority, PageType
 from app.modules.discovery.domain.repository import DiscoveryRepository
+from app.queue import get_queue, get_redis_connection
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["crawling"])
 
@@ -95,6 +109,10 @@ def get_content_storage() -> ContentStorage:
     return LocalFilesystemContentStorage()
 
 
+def get_crawl_queue() -> Queue:
+    return get_queue("crawling")
+
+
 def get_crawl_service(
     company_gateway: CompanyCrawlGateway = Depends(get_company_crawl_gateway),
     discovery_gateway: DiscoveryCrawlGateway = Depends(get_discovery_crawl_gateway),
@@ -123,9 +141,15 @@ async def create_crawl_run(
     company_id: str,
     request: CreateCrawlRunRequest,
     service: WebsiteCrawlService = Depends(get_crawl_service),
+    queue: Queue = Depends(get_crawl_queue),
 ) -> CrawlRunEnvelope:
+    # Imported here, not at module top: `rq_jobs.py` imports this
+    # module's own `get_*` DI accessors to rebuild the same composition
+    # for a worker process, which would otherwise be a circular import.
+    from app.modules.crawling.infrastructure.rq_jobs import CRAWL_JOB_TIMEOUT, run_crawl_execution
+
     try:
-        run = await service.start_crawl_run(
+        run = await service.enqueue_crawl_run(
             company_id, request.discovery_run_id, request.options_or_default()
         )
     except CompanyNotFoundForCrawlError as error:
@@ -141,6 +165,17 @@ async def create_crawl_run(
                 "status": error.status,
             },
         ) from error
+    queue.enqueue_call(
+        func=run_crawl_execution,
+        args=(run.crawl_run_id,),
+        job_id=run.crawl_run_id,
+        # RQ's own `Queue.enqueue_call` type stub declares `timeout` as
+        # `int | None`, but its runtime implementation
+        # (`rq.utils.parse_timeout`) also accepts RQ's documented string
+        # duration syntax (e.g. "1h") — a known stub/runtime mismatch in
+        # the installed `rq` package, not a real type error here.
+        timeout=CRAWL_JOB_TIMEOUT,  # pyright: ignore[reportArgumentType]
+    )
     return CrawlRunEnvelope(data=run_to_response(run))
 
 
@@ -172,6 +207,20 @@ async def get_crawl_run(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(CrawlRunNotFoundError(crawl_run_id))
         )
     return CrawlRunEnvelope(data=run_to_response(run))
+
+
+@router.get("/api/crawl-runs", response_model=CrawlRunListResponse)
+async def list_crawl_runs(
+    status: Annotated[CrawlStatus | None, Query(alias="status")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias="pageSize", ge=1, le=200)] = 20,
+    repository: CrawlRepository = Depends(get_crawl_repository),
+) -> CrawlRunListResponse:
+    result = await repository.list_runs(status=status, page=page, page_size=page_size)
+    return CrawlRunListResponse(
+        data=[run_to_response(run) for run in result.items],
+        pagination=PaginationMeta(page=page, page_size=page_size, total=result.total),
+    )
 
 
 @router.get("/api/crawl-runs/{crawl_run_id}/targets", response_model=CrawlTargetListResponse)
@@ -252,6 +301,20 @@ async def cancel_crawl_run(
         run = await service.cancel_run(crawl_run_id)
     except CrawlRunNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+
+    # Best-effort: cancel whichever RQ job (if any) is still queued for
+    # this run — never blocks or changes the response. RQ can only
+    # cleanly cancel a job that hasn't been picked up by a worker yet;
+    # once running, `execute_crawl_run`'s own cooperative cancellation
+    # check (between targets) is what actually stops it.
+    for candidate_job_id in (crawl_run_id, f"{crawl_run_id}-retry"):
+        try:
+            Job.fetch(candidate_job_id, connection=get_redis_connection()).cancel()
+        except NoSuchJobError:
+            pass
+        except Exception as error:  # any other RQ/Redis failure is logged, never raised
+            logger.warning("failed to cancel RQ job %s: %s", candidate_job_id, error)
+
     return CrawlRunEnvelope(data=run_to_response(run))
 
 
@@ -259,9 +322,21 @@ async def cancel_crawl_run(
 async def retry_failed_targets(
     crawl_run_id: str,
     service: WebsiteCrawlService = Depends(get_crawl_service),
+    queue: Queue = Depends(get_crawl_queue),
 ) -> CrawlRunEnvelope:
+    # See `create_crawl_run`'s comment on why this import is local, not
+    # at module top.
+    from app.modules.crawling.infrastructure.rq_jobs import CRAWL_JOB_TIMEOUT, run_crawl_retry
+
     try:
-        run = await service.retry_failed(crawl_run_id)
+        run = await service.enqueue_retry(crawl_run_id)
     except CrawlRunNotFoundError as error:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+    queue.enqueue_call(
+        func=run_crawl_retry,
+        args=(crawl_run_id,),
+        job_id=f"{crawl_run_id}-retry",
+        # See `create_crawl_run`'s comment on this same pyright ignore.
+        timeout=CRAWL_JOB_TIMEOUT,  # pyright: ignore[reportArgumentType]
+    )
     return CrawlRunEnvelope(data=run_to_response(run))

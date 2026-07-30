@@ -5,6 +5,7 @@ from enum import StrEnum
 
 class ImportSource(StrEnum):
     STORELEADS_HTML = "storeleads_html"
+    STORELEADS_VAADIN_GRID = "storeleads_vaadin_grid"
 
 
 class ValidationStatus(StrEnum):

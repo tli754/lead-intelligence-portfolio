@@ -161,6 +161,11 @@ class CrawlRunEnvelope(CamelCaseModel):
     data: CrawlRunResponse
 
 
+class CrawlRunListResponse(CamelCaseModel):
+    data: list[CrawlRunResponse]
+    pagination: PaginationMeta
+
+
 def run_to_response(run: CrawlRun) -> CrawlRunResponse:
     return CrawlRunResponse(
         crawl_run_id=run.crawl_run_id,

@@ -19,7 +19,7 @@ Beyond the brief's literal method list this adds two documented methods
 from abc import ABC, abstractmethod
 from typing import NamedTuple
 
-from app.modules.extraction.domain.enums import FactStatus, VerificationState
+from app.modules.extraction.domain.enums import ExtractionStatus, FactStatus, VerificationState
 from app.modules.extraction.domain.field_catalogue import FieldPath
 from app.modules.extraction.domain.models import (
     ExtractionRun,
@@ -69,6 +69,19 @@ class ExtractionRepository(ABC):
         `GET /api/companies/{company_id}/extraction-runs/latest` (brief
         section 23), mirroring `CrawlRepository.list_runs_by_company`'s
         identical precedent."""
+        ...
+
+    @abstractmethod
+    async def list_runs(
+        self,
+        *,
+        status: ExtractionStatus | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> ExtractionRunPage:
+        """Lists `ExtractionRun`s across all companies, sorted by `created_at`
+        descending — the cross-company counterpart to `list_runs_by_company`,
+        used by the jobs-page listing endpoint (`GET /api/extraction-runs`)."""
         ...
 
     @abstractmethod

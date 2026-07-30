@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 
 import { useJobs } from "@/api/queries";
 import { JobStatusBadge } from "@/components/status";
+import { QueueStatsPanel } from "@/components/QueueStatsPanel";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Select } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -18,7 +19,16 @@ const STAGE_LABELS: Record<JobStage, string> = {
   scoring: "Scoring",
 };
 
-/** Read-only view of the pipeline job queue — mock data only, no worker exists yet. */
+/**
+ * Read-only view of the pipeline job queue, backed by real discovery/
+ * crawl/extraction run data (`useJobs` -> `fetchPipelineJobs`).
+ * `analysis`/`scoring` stages always show no results — no backend
+ * module exists for either yet.
+ *
+ * Also renders `QueueStatsPanel` above the jobs table — a separate,
+ * independently-failing `useQueueStats` query surfacing live RQ/Redis
+ * queue counts and worker liveness (see Task 019's feature contract).
+ */
 export function JobsPage() {
   const [stage, setStage] = useState<JobStage | "all">("all");
   const [status, setStatus] = useState<JobStatus | "all">("all");
@@ -41,6 +51,8 @@ export function JobsPage() {
           Discovery, crawl, extraction, analysis and scoring jobs across the pipeline.
         </p>
       </div>
+
+      <QueueStatsPanel />
 
       <div className="flex flex-wrap items-end gap-3" role="search" aria-label="Filter jobs">
         <div className="flex flex-col gap-1">

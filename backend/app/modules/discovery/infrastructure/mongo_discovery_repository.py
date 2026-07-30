@@ -16,9 +16,13 @@ needed `main.py` wiring for its own `ensure_indexes()` call).
 from motor.motor_asyncio import AsyncIOMotorCollection, AsyncIOMotorDatabase
 from pymongo import ReturnDocument
 
-from app.modules.discovery.domain.enums import DiscoverySource, PageType
+from app.modules.discovery.domain.enums import DiscoverySource, DiscoveryStatus, PageType
 from app.modules.discovery.domain.models import DiscoveredUrl, DiscoveryRun
-from app.modules.discovery.domain.repository import DiscoveredUrlPage, DiscoveryRepository
+from app.modules.discovery.domain.repository import (
+    DiscoveredUrlPage,
+    DiscoveryRepository,
+    DiscoveryRunPage,
+)
 
 RUNS_COLLECTION_NAME = "discovery_runs"
 URLS_COLLECTION_NAME = "discoveries"
@@ -60,6 +64,7 @@ class MongoDiscoveryRepository(DiscoveryRepository):
         await self._runs.create_index("company_id")
         await self._runs.create_index("status")
         await self._runs.create_index("started_at")
+        await self._runs.create_index("created_at")
 
         await self._urls.create_index("discovered_url_id", unique=True)
         await self._urls.create_index(
@@ -95,6 +100,23 @@ class MongoDiscoveryRepository(DiscoveryRepository):
         async for document in cursor:
             return _run_from_document(document)
         return None
+
+    async def list_runs(
+        self,
+        *,
+        status: DiscoveryStatus | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> DiscoveryRunPage:
+        query: dict = {}
+        if status is not None:
+            query["status"] = status.value
+
+        total = await self._runs.count_documents(query)
+        skip = (page - 1) * page_size
+        cursor = self._runs.find(query).sort("created_at", -1).skip(skip).limit(page_size)
+        items = [_run_from_document(document) async for document in cursor]
+        return DiscoveryRunPage(items=items, total=total)
 
     async def save_discovered_urls(self, urls: list[DiscoveredUrl]) -> list[DiscoveredUrl]:
         if not urls:

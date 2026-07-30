@@ -5,8 +5,18 @@ detail, worked through against two examples: `backend/app/domains/companies/`
 (the flat convention, introduced by the paste-in importer feature) and
 `backend/app/modules/companies/` (the hexagonal convention, introduced
 later — see ARCHITECTURE.md's "Module convention" section for why two
-conventions and two `Company` models coexist here without an ADR
-reconciling them yet).
+conventions and two `Company` models coexisted here without an ADR
+reconciling them, until that fork was resolved by removing
+`domains/companies`).
+
+**Historical note:** `domains/companies` was removed as dead weight once
+`modules/imports`'s UI superseded it (Task 014; see ADR 0002's
+addendum). The "Worked example: `companies`" section below walks through
+files that no longer exist — kept for illustrating the flat convention's
+*shape* (router → service → repository → MongoDB), not as a pointer to
+current code. `domains/health` is the convention's only surviving,
+current example. The `modules/companies` half of the worked example
+below is still accurate.
 
 ## The rule (flat convention)
 

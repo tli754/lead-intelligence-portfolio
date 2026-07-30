@@ -75,6 +75,11 @@ class DiscoveredUrlListResponse(CamelCaseModel):
     pagination: PaginationMeta
 
 
+class DiscoveryRunListResponse(CamelCaseModel):
+    data: list[DiscoveryRunResponse]
+    pagination: PaginationMeta
+
+
 def summary_to_response(summary: DiscoverySummary) -> DiscoverySummaryResponse:
     return DiscoverySummaryResponse(**summary.model_dump())
 

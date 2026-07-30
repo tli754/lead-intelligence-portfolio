@@ -7,7 +7,7 @@ live in `infrastructure/` (e.g. `MongoDiscoveryRepository`).
 from abc import ABC, abstractmethod
 from typing import NamedTuple
 
-from app.modules.discovery.domain.enums import DiscoverySource, PageType
+from app.modules.discovery.domain.enums import DiscoverySource, DiscoveryStatus, PageType
 from app.modules.discovery.domain.models import DiscoveredUrl, DiscoveryRun
 
 
@@ -15,6 +15,15 @@ class DiscoveredUrlPage(NamedTuple):
     """A page of `list_discovered_urls` results, plus the total matching count."""
 
     items: list[DiscoveredUrl]
+    total: int
+
+
+class DiscoveryRunPage(NamedTuple):
+    """A page of `list_runs` results, plus the total matching count — mirrors
+    `DiscoveredUrlPage`'s existing style, and `CrawlRunPage`/`ExtractionRunPage`'s
+    precedent in the other two pipeline modules."""
+
+    items: list[DiscoveryRun]
     total: int
 
 
@@ -44,6 +53,19 @@ class DiscoveryRepository(ABC):
         `save_discovered_urls`, `get_run`, `list_discovered_urls`,
         `find_existing_url`) can serve that endpoint.
         """
+        ...
+
+    @abstractmethod
+    async def list_runs(
+        self,
+        *,
+        status: DiscoveryStatus | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> DiscoveryRunPage:
+        """Lists `DiscoveryRun`s across all companies, sorted by `created_at`
+        descending — the cross-company counterpart to `get_latest_run_for_company`,
+        used by the jobs-page listing endpoint (`GET /api/discovery-runs`)."""
         ...
 
     @abstractmethod

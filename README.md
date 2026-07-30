@@ -1,25 +1,10 @@
 # lead-intelligence
 
-> **Note:** this is a learning project, built to explore harness
-> design (planner → generator → evaluator agent workflows) rather
-> than as a production lead-gen tool.
-
 Turns pasted lead data (a plain domain list, or raw HTML copied from
 storelead.app's results grid) into structured `Company` records in
-MongoDB, then discovers, crawls, and extracts structured facts (with
-evidence) from each company's website. Part of a larger pipeline:
-Ingestion → Crawling → Interpretation → Scoring → API → Frontend — this
-repo currently covers Ingestion through Interpretation:
-
-- **companies** — the core `Company` record and its status lifecycle
-- **imports** — paste-in ingestion (domain lists, StoreLeads HTML)
-- **discovery** — sitemap/robots/link crawl to find candidate pages
-- **crawling** — fetches and stores page content for discovered URLs
-- **evidence** — source snippets backing extracted facts
-- **extraction** — turns crawled content into structured facts with evidence
-
-See `ARCHITECTURE.md` for the layering rules and `CLAUDE.md` for the
-full directory layout.
+MongoDB. First stage of a larger pipeline: Ingestion → Crawling →
+Interpretation → Scoring → API → Frontend. See `ARCHITECTURE.md` for
+the layering rules and `CLAUDE.md` for the directory layout.
 
 ## Prerequisites
 
@@ -72,11 +57,7 @@ at `http://localhost:8000` (set via `VITE_API_BASE_URL`).
 ## Tests
 
 ```bash
-# backend, from the repo root — two test suites under backend/tests/modules/companies
-# and backend/tests/test_company_module_api.py are known-stale and abort collection,
-# so ignore them explicitly until they're deleted (see CLAUDE.md's "Where tests live")
-pytest --ignore=backend/tests/modules/companies --ignore=backend/tests/test_company_module_api.py
-
+pytest                          # backend, from the repo root
 cd frontend && pnpm run test    # frontend
 ```
 
@@ -87,14 +68,33 @@ This repository uses a planner → generator → evaluator workflow (see
 execution plans in `docs/execution-plans/`, and ADRs in
 `docs/decisions/`.
 
-The split exists for the same reason described in Anthropic's
-[Harness design for long-running applications](https://www.anthropic.com/engineering/harness-design-long-running-apps)
-and OpenAI's [Harness engineering](https://openai.com/index/harness-engineering/):
-a single agent asked to both build and judge its own work tends to
-rubber-stamp mediocre output, and a single agent given an entire
-feature end-to-end loses coherence over a long context. Separating
-generation from evaluation, and decomposing work into
-planner-approved contracts before any code is written, keeps each
-step small enough for an agent to actually get right — and gives a
-human a small number of high-leverage points (the contract, the PASS/
-FAIL from the evaluator) to review instead of every line of output.
+### Harness design notes
+
+Ideas worth keeping in mind when evolving the agent workflow above,
+from two articles on building harnesses for long-running coding
+agents:
+
+- [Harness design for long-running agentic development](https://www.anthropic.com/engineering/harness-design-long-running-apps) (Anthropic)
+  — separate the agent that does the work from the agent that judges
+  it (self-evaluation is biased); turn subjective review criteria
+  into concrete, gradable rubrics; prefer a clean context reset over
+  compaction for long tasks; break work into explicit "contracts"
+  before implementation starts; re-examine the harness whenever the
+  underlying model improves, since scaffolding built around old
+  limitations can become unnecessary overhead.
+- [Harness engineering: leveraging Codex in an agent-first world](https://openai.com/index/harness-engineering/) (OpenAI)
+  — three pillars of a harness are constraints (narrowing the
+  model's output space), observability (visibility into reasoning
+  and tool-call trajectories), and feedback loops (continuous
+  tuning based on real traces); more constraints often make agents
+  *more* reliable, not less — architectural boundaries enforced by
+  linters/validators help; anything not in-context effectively
+  doesn't exist to the agent, so what the repo/docs surface matters
+  as much as what the model can do; the highest-leverage work shifts
+  from writing code to designing the environment the agent reasons
+  in.
+
+This repo's planner/generator/evaluator split and its "Asked →
+Decided → Built" artifact trail (see `CLAUDE.md`'s Task workflow)
+already reflect the generator/evaluator separation and the
+contracts-before-implementation idea above.

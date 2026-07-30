@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     MONGODB_URI: str = "mongodb://localhost:27017"
     MONGODB_DB_NAME: str = "lead_intelligence"
     CORS_ALLOWED_ORIGINS: str = "http://localhost:5173"
+    REDIS_URL: str = "redis://localhost:6379/0"
 
     @property
     def cors_allowed_origins_list(self) -> list[str]:

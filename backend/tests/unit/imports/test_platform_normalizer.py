@@ -13,6 +13,10 @@ class TestNormalizePlatform:
             ("Custom", "custom"),
             ("SHOPIFY", "shopify"),
             ("  shopify  ", "shopify"),
+            ("PrestaShop", "prestashop"),
+            ("OpenCart", "opencart"),
+            ("PRESTASHOP", "prestashop"),
+            ("  opencart  ", "opencart"),
         ],
     )
     def test_normalizes_known_platforms(self, raw: str, expected: str) -> None:

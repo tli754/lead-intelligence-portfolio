@@ -1,4 +1,3 @@
-import type { ImportResponse } from "../types/company";
 import type {
   CompanyListFilters,
   CompanyListItem,
@@ -7,9 +6,6 @@ import type {
 import { companyListResponseSchema } from "../schemas/company";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
-
-/** Raised when the API rejects an import request (e.g. 422 validation error). */
-export class ImportRequestError extends Error {}
 
 /** Raised when the API rejects a companies-list request (e.g. a bad query param). */
 export class CompanyListRequestError extends Error {}
@@ -31,22 +27,6 @@ function extractErrorMessage(body: FastApiErrorBody, fallback: string): string {
     return detail[0].msg;
   }
   return fallback;
-}
-
-/** Posts raw pasted text to the import endpoint and returns the parsed result. */
-export async function importCompanies(rawText: string): Promise<ImportResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/companies/import`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ raw_text: rawText }),
-  });
-
-  if (!response.ok) {
-    const body = (await response.json().catch(() => ({}))) as FastApiErrorBody;
-    throw new ImportRequestError(extractErrorMessage(body, "The import request was rejected."));
-  }
-
-  return (await response.json()) as ImportResponse;
 }
 
 /**
@@ -118,7 +98,7 @@ export function mapCompanyListItem(dto: CompanyListItemDto): CompanyListItem {
   };
 }
 
-function buildCompanyListQuery(filters: CompanyListFilters): string {
+function buildCompanyListQuery(filters: CompanyListFilters, pageSize?: number): string {
   const params = new URLSearchParams();
   if (filters.processing_status) params.set("processingStatus", filters.processing_status);
   if (filters.workflow_status) params.set("workflowStatus", filters.workflow_status);
@@ -126,21 +106,31 @@ function buildCompanyListQuery(filters: CompanyListFilters): string {
   // `q`/`sort`/`order` have no backend equivalent on `GET /api/companies`
   // (no free-text search, no server-side sort) and are intentionally
   // dropped here rather than sent as unsupported query params.
+  if (pageSize !== undefined) params.set("pageSize", String(pageSize));
   const query = params.toString();
   return query ? `?${query}` : "";
 }
 
 /**
- * `GET /api/companies?processingStatus=&workflowStatus=&platform=`
+ * `GET /api/companies?processingStatus=&workflowStatus=&platform=&pageSize=`
  *
  * `filters.q`/`filters.sort`/`filters.order` are accepted (so callers
  * don't need to strip them) but not sent — the real endpoint doesn't
  * support free-text search or server-side sorting.
+ *
+ * `pageSize` is an optional, additive second parameter (not part of
+ * `CompanyListFilters`, which mirrors user-facing filter controls, not
+ * pagination) — added for Task 012's jobs-page `company_id` -> `domain`
+ * lookup, which wants one call covering as many companies as the
+ * backend allows (`pageSize<=200`) rather than the default page of 20.
  */
 export async function listCompanies(
   filters: CompanyListFilters = {},
+  pageSize?: number,
 ): Promise<CompanyListResponse> {
-  const response = await fetch(`${API_BASE_URL}/api/companies${buildCompanyListQuery(filters)}`);
+  const response = await fetch(
+    `${API_BASE_URL}/api/companies${buildCompanyListQuery(filters, pageSize)}`,
+  );
 
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as FastApiErrorBody;

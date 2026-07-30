@@ -119,6 +119,63 @@ async def test_update_run_rejects_stale_document_version(repository: MongoExtrac
 
 
 @pytest.mark.asyncio
+async def test_list_runs_returns_all_runs_across_companies(repository: MongoExtractionRepository):
+    await repository.create_run(_make_run(idempotency_key="a"))
+    other_company_run = _make_run(idempotency_key="b")
+    other_company_run.company_id = "company-2"
+    await repository.create_run(other_company_run)
+
+    page = await repository.list_runs()
+
+    assert page.total == 2
+    assert len(page.items) == 2
+
+
+@pytest.mark.asyncio
+async def test_list_runs_filters_by_status(repository: MongoExtractionRepository):
+    completed_run = _make_run(idempotency_key="a")
+    completed_run.status = ExtractionStatus.COMPLETED
+    await repository.create_run(completed_run)
+    failed_run = _make_run(idempotency_key="b")
+    failed_run.status = ExtractionStatus.FAILED
+    await repository.create_run(failed_run)
+
+    page = await repository.list_runs(status=ExtractionStatus.FAILED)
+
+    assert page.total == 1
+    assert page.items[0].status == ExtractionStatus.FAILED
+
+
+@pytest.mark.asyncio
+async def test_list_runs_with_no_matches_returns_empty_page(repository: MongoExtractionRepository):
+    completed_run = _make_run()
+    completed_run.status = ExtractionStatus.COMPLETED
+    await repository.create_run(completed_run)
+
+    page = await repository.list_runs(status=ExtractionStatus.FAILED)
+
+    assert page.total == 0
+    assert page.items == []
+
+
+@pytest.mark.asyncio
+async def test_list_runs_sorted_by_created_at_descending(repository: MongoExtractionRepository):
+    older = _make_run(idempotency_key="older")
+    older.created_at = datetime(2024, 1, 1, tzinfo=UTC)
+    newer = _make_run(idempotency_key="newer")
+    newer.created_at = datetime(2024, 6, 1, tzinfo=UTC)
+    await repository.create_run(older)
+    await repository.create_run(newer)
+
+    page = await repository.list_runs()
+
+    assert [run.extraction_run_id for run in page.items] == [
+        newer.extraction_run_id,
+        older.extraction_run_id,
+    ]
+
+
+@pytest.mark.asyncio
 async def test_ensure_indexes_creates_expected_indexes(
     repository: MongoExtractionRepository, test_database
 ):

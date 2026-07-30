@@ -206,6 +206,19 @@ class CrawlRun(BaseModel):
     completed_at: datetime | None = None
 
     configuration_snapshot: dict = Field(default_factory=dict)
+    # Added alongside the RQ enqueue/execute split (Task 017):
+    # `enqueue_crawl_run` persists the caller's full `CrawlRunOptions`
+    # here (as a JSON-mode dump, mirroring `configuration_snapshot`'s own
+    # pattern) so `execute_crawl_run` — looked up later by `crawl_run_id`
+    # alone, possibly from a separate worker process — can recover
+    # `force_refresh`/`include_page_types`/`exclude_page_types`/
+    # `manual_urls` exactly as requested, rather than silently falling
+    # back to defaults. A run persisted before this field existed
+    # defaults to `{}`, which `CrawlRunOptions.model_validate({})`
+    # resolves to an all-default `CrawlRunOptions()` — the same behavior
+    # this field is fixing forward from, not a breaking change for
+    # already-persisted documents.
+    options_snapshot: dict = Field(default_factory=dict)
     summary: CrawlSummary = Field(default_factory=CrawlSummary)
     warnings: list[CrawlWarning] = Field(default_factory=list)
     error: str | None = None

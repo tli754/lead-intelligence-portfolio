@@ -100,6 +100,71 @@ class TestImportIsSafeToRetry:
         assert len(gateway.created) == 3
 
 
+class TestVaadinGridImportCreatesValidNewCompanies:
+    """Parallels TestImportCreatesValidNewCompanies, using the Vaadin-grid
+    fixture — same commit endpoint, auto-detected input format."""
+
+    async def test_creates_every_valid_new_row(self, client: AsyncClient, gateway) -> None:
+        body = await _run_import(client, _load("vaadin_grid_standard.html"))
+
+        assert body["data"]["created"] == 4
+        assert body["data"]["skippedExisting"] == 0
+        assert body["data"]["skippedInvalid"] == 0
+        assert body["data"]["failed"] == 0
+        assert {row["normalized_domain"] for row in gateway.created} == {
+            "northfieldsupply.com",
+            "brightlanemarket.com",
+            "cascadetrailgoods.com",
+            "harborviewsupply.com",
+        }
+
+    async def test_maps_platform_country_city_onto_the_company_gateway_call(
+        self, client: AsyncClient, gateway
+    ) -> None:
+        await _run_import(client, _load("vaadin_grid_standard.html"))
+
+        northfield = next(
+            c for c in gateway.created if c["normalized_domain"] == "northfieldsupply.com"
+        )
+        assert northfield["platform"] == "shopify"
+        assert northfield["country"] == "US"
+        assert northfield["city"] == "Austin"
+
+
+class TestVaadinGridImportIsSafeToRetry:
+    async def test_running_the_same_vaadin_grid_paste_twice_creates_nothing_the_second_time(
+        self, client_factory, make_gateway
+    ) -> None:
+        gateway = make_gateway()
+        html = _load("vaadin_grid_standard.html")
+        async with client_factory(gateway) as client:
+            first = await _run_import(client, html)
+            second = await _run_import(client, html)
+
+        assert first["data"]["created"] == 4
+        assert second["data"]["created"] == 0
+        assert second["data"]["skippedExisting"] == 4
+        assert len(gateway.created) == 4
+
+
+class TestVaadinGridOneFailedRowDoesNotFailTheBatch:
+    async def test_a_single_gateway_failure_is_isolated_to_its_row(
+        self, client_factory, make_gateway
+    ) -> None:
+        gateway = make_gateway(fail_domains={"brightlanemarket.com"})
+        async with client_factory(gateway) as client:
+            body = await _run_import(client, _load("vaadin_grid_standard.html"))
+
+        assert body["data"]["created"] == 3
+        assert body["data"]["failed"] == 1
+        failed_row = next(
+            row
+            for row in body["data"]["rows"]
+            if row["normalizedDomain"] == "brightlanemarket.com"
+        )
+        assert failed_row["outcome"] == "failed"
+
+
 class TestOneFailedRowDoesNotFailTheBatch:
     async def test_a_single_gateway_failure_is_isolated_to_its_row(
         self, client_factory, make_gateway

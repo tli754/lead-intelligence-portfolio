@@ -1024,3 +1024,232 @@ class TestChallengePagePolicy:
         assert page.fetch_status != PageFetchStatus.FAILED
         assert page.fetch_status != PageFetchStatus.REJECTED
         assert run.summary.pages_failed == 0
+
+
+class TestEnqueueExecuteSplit:
+    """Task 017 (RQ adoption): `start_crawl_run` splits into
+    `enqueue_crawl_run` (validation + persist a `queued` run, no
+    execution) and `execute_crawl_run` (the actual target-processing,
+    callable by `crawl_run_id` alone). These tests cover AC-03/AC-04/
+    AC-05 from that contract; the rest of this file's existing tests
+    (calling `start_crawl_run`, unmodified) cover AC-06."""
+
+    async def test_enqueue_crawl_run_does_not_execute(
+        self,
+        company_gateway: FakeCompanyCrawlGateway,
+        discovery_gateway: FakeDiscoveryCrawlGateway,
+        robots_gateway: FakeRobotsPolicyGateway,
+        crawl_repository: FakeCrawlRepository,
+        page_fetcher: FakePageFetcher,
+        content_storage: FakeContentStorage,
+    ) -> None:
+        _single_homepage_discovery(discovery_gateway)
+        # Deliberately no configured response — `enqueue_crawl_run` must
+        # never reach the point of fetching a page.
+        service = _service(
+            company_gateway=company_gateway,
+            discovery_gateway=discovery_gateway,
+            robots_gateway=robots_gateway,
+            crawl_repository=crawl_repository,
+            page_fetcher=page_fetcher,
+            content_storage=content_storage,
+        )
+
+        run = await service.enqueue_crawl_run("company-1", "discovery-1")
+
+        assert run.status == CrawlStatus.QUEUED
+        assert crawl_repository.targets == {}
+        assert page_fetcher.call_log == []
+        assert company_gateway.status_updates == []
+
+    async def test_execute_crawl_run_matches_start_crawl_run(
+        self,
+        company_gateway: FakeCompanyCrawlGateway,
+        discovery_gateway: FakeDiscoveryCrawlGateway,
+        robots_gateway: FakeRobotsPolicyGateway,
+        crawl_repository: FakeCrawlRepository,
+        page_fetcher: FakePageFetcher,
+        content_storage: FakeContentStorage,
+    ) -> None:
+        _single_homepage_discovery(discovery_gateway)
+        page_fetcher.set_response(HOMEPAGE_URL, _http_result())
+        service = _service(
+            company_gateway=company_gateway,
+            discovery_gateway=discovery_gateway,
+            robots_gateway=robots_gateway,
+            crawl_repository=crawl_repository,
+            page_fetcher=page_fetcher,
+            content_storage=content_storage,
+        )
+
+        enqueued = await service.enqueue_crawl_run("company-1", "discovery-1")
+        assert enqueued.status == CrawlStatus.QUEUED
+
+        run = await service.execute_crawl_run(enqueued.crawl_run_id)
+
+        assert run.status in (CrawlStatus.COMPLETED, CrawlStatus.COMPLETED_WITH_WARNINGS)
+        assert run.summary.targets_selected == 1
+        assert run.summary.pages_fetched == 1
+        assert len(crawl_repository.pages) == 1
+        assert ("company-1", ProcessingStatus.CRAWLING) in company_gateway.status_updates
+        assert ("company-1", ProcessingStatus.CRAWLED) in company_gateway.status_updates
+
+    async def test_execute_crawl_run_short_circuits_when_already_cancelled(
+        self,
+        company_gateway: FakeCompanyCrawlGateway,
+        discovery_gateway: FakeDiscoveryCrawlGateway,
+        robots_gateway: FakeRobotsPolicyGateway,
+        crawl_repository: FakeCrawlRepository,
+        page_fetcher: FakePageFetcher,
+        content_storage: FakeContentStorage,
+    ) -> None:
+        _single_homepage_discovery(discovery_gateway)
+        service = _service(
+            company_gateway=company_gateway,
+            discovery_gateway=discovery_gateway,
+            robots_gateway=robots_gateway,
+            crawl_repository=crawl_repository,
+            page_fetcher=page_fetcher,
+            content_storage=content_storage,
+        )
+
+        enqueued = await service.enqueue_crawl_run("company-1", "discovery-1")
+        cancelled = await service.cancel_run(enqueued.crawl_run_id)
+        assert cancelled.status == CrawlStatus.CANCELLED
+
+        run = await service.execute_crawl_run(enqueued.crawl_run_id)
+
+        assert run.status == CrawlStatus.CANCELLED
+        assert crawl_repository.targets == {}
+        assert page_fetcher.call_log == []
+        assert company_gateway.status_updates == []
+
+    async def test_execute_crawl_run_recovers_persisted_options(
+        self,
+        company_gateway: FakeCompanyCrawlGateway,
+        discovery_gateway: FakeDiscoveryCrawlGateway,
+        robots_gateway: FakeRobotsPolicyGateway,
+        crawl_repository: FakeCrawlRepository,
+        page_fetcher: FakePageFetcher,
+        content_storage: FakeContentStorage,
+    ) -> None:
+        """Regression test: `execute_crawl_run` must recover the exact
+        `CrawlRunOptions` the run was `enqueue_crawl_run`-ed with (via
+        `CrawlRun.options_snapshot`), not silently fall back to
+        all-default options. Exercises `exclude_page_types`,
+        `manual_urls`, and `force_refresh` together, then cross-checks
+        the same scenario against the original single-call
+        `start_crawl_run` path for equivalence (AC-04)."""
+        from datetime import UTC, datetime
+
+        product_url = "https://example.com/product-1"
+        manually_included_url = "https://example.com/cart"
+        discovery_gateway._urls.extend(
+            [
+                make_discovered_url(
+                    discovery_run_id="discovery-1",
+                    url=HOMEPAGE_URL,
+                    page_type=PageType.HOMEPAGE,
+                    priority=DiscoveryPriority.PRIORITY_1,
+                ),
+                make_discovered_url(
+                    discovery_run_id="discovery-1",
+                    url=product_url,
+                    page_type=PageType.PRODUCT,
+                    priority=DiscoveryPriority.PRIORITY_1,
+                ),
+                # `CART` is in `DEFAULT_DENY_PAGE_TYPES` and would never be
+                # selected on its own — only `manual_urls` can force it in.
+                make_discovered_url(
+                    discovery_run_id="discovery-1",
+                    url=manually_included_url,
+                    page_type=PageType.CART,
+                    priority=DiscoveryPriority.PRIORITY_2,
+                ),
+            ]
+        )
+        # A previous page for the homepage, so `force_refresh` is
+        # observable in the recorded fetch request's conditional headers.
+        previous_page = CrawledPage(
+            crawl_run_id="previous-run",
+            company_id="company-1",
+            discovery_run_id="discovery-1",
+            original_url=HOMEPAGE_URL,
+            normalized_url=HOMEPAGE_URL,
+            page_type=PageType.HOMEPAGE,
+            priority=DiscoveryPriority.PRIORITY_1,
+            fetch_status=PageFetchStatus.FETCHED,
+            http_metadata=HttpMetadata(status_code=200, etag='"v1"'),
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+            fetched_at=datetime.now(UTC),
+        )
+        await crawl_repository.save_page(previous_page)
+
+        page_fetcher.set_response(HOMEPAGE_URL, _http_result(etag='"v1"'))
+        page_fetcher.set_response(
+            manually_included_url, _http_result(final_url=manually_included_url)
+        )
+
+        options = CrawlRunOptions(
+            force_refresh=True,
+            exclude_page_types=[PageType.PRODUCT],
+            manual_urls=[manually_included_url],
+        )
+        service = _service(
+            company_gateway=company_gateway,
+            discovery_gateway=discovery_gateway,
+            robots_gateway=robots_gateway,
+            crawl_repository=crawl_repository,
+            page_fetcher=page_fetcher,
+            content_storage=content_storage,
+        )
+
+        enqueued = await service.enqueue_crawl_run("company-1", "discovery-1", options)
+        run = await service.execute_crawl_run(enqueued.crawl_run_id)
+
+        selected_urls = {
+            target.normalized_url
+            for target in crawl_repository.targets.values()
+            if target.crawl_run_id == run.crawl_run_id
+        }
+        # `product_url` excluded by `exclude_page_types`; `manually_included_url`
+        # included only because of `manual_urls` (its own priority/page type
+        # would otherwise deny it); homepage always included.
+        assert selected_urls == {HOMEPAGE_URL, manually_included_url}
+        assert run.summary.targets_selected == 2
+
+        homepage_request = next(
+            request for request in page_fetcher.call_log if request.url == HOMEPAGE_URL
+        )
+        # `force_refresh=True` must suppress the conditional (etag/
+        # last-modified) headers that would otherwise be sent for a URL
+        # with a known previous page.
+        assert homepage_request.previous_etag is None
+        assert homepage_request.previous_last_modified is None
+
+        # Cross-check equivalence against the original single-call path
+        # (AC-04's "matches what start_crawl_run would have produced"),
+        # using a fresh set of fakes for a clean second run.
+        baseline_repository = FakeCrawlRepository()
+        baseline_page_fetcher = FakePageFetcher()
+        baseline_page_fetcher.set_response(HOMEPAGE_URL, _http_result(etag='"v1"'))
+        baseline_page_fetcher.set_response(
+            manually_included_url, _http_result(final_url=manually_included_url)
+        )
+        baseline_service = _service(
+            company_gateway=FakeCompanyCrawlGateway(),
+            discovery_gateway=discovery_gateway,
+            robots_gateway=robots_gateway,
+            crawl_repository=baseline_repository,
+            page_fetcher=baseline_page_fetcher,
+            content_storage=FakeContentStorage(),
+        )
+
+        baseline_run = await baseline_service.start_crawl_run("company-1", "discovery-1", options)
+
+        baseline_selected_urls = {
+            target.normalized_url for target in baseline_repository.targets.values()
+        }
+        assert baseline_selected_urls == selected_urls
+        assert baseline_run.summary.targets_selected == run.summary.targets_selected

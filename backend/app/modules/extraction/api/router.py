@@ -26,6 +26,7 @@ from app.modules.evidence.domain.enums import EvidenceStatus, EvidenceStrength, 
 from app.modules.extraction.api.schemas import (
     CreateExtractionRunRequest,
     ExtractionRunEnvelope,
+    ExtractionRunListResponse,
     FactCandidateListResponse,
     FactEnvelope,
     FactListResponse,
@@ -37,7 +38,7 @@ from app.modules.extraction.api.schemas import (
 from app.modules.extraction.application.structured_extraction_service import (
     StructuredExtractionService,
 )
-from app.modules.extraction.domain.enums import FactStatus, VerificationState
+from app.modules.extraction.domain.enums import ExtractionStatus, FactStatus, VerificationState
 from app.modules.extraction.domain.exceptions import (
     CompanyNotFoundForExtractionError,
     CrawlRunNotFoundForExtractionError,
@@ -209,6 +210,20 @@ async def get_extraction_run(
             detail=str(ExtractionRunNotFoundError(extraction_run_id)),
         )
     return ExtractionRunEnvelope(data=run_to_response(run))
+
+
+@router.get("/api/extraction-runs", response_model=ExtractionRunListResponse)
+async def list_extraction_runs(
+    status: Annotated[ExtractionStatus | None, Query(alias="status")] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(alias="pageSize", ge=1, le=200)] = 20,
+    repository: ExtractionRepository = Depends(get_extraction_repository),
+) -> ExtractionRunListResponse:
+    result = await repository.list_runs(status=status, page=page, page_size=page_size)
+    return ExtractionRunListResponse(
+        data=[run_to_response(run) for run in result.items],
+        pagination=PaginationMeta(page=page, page_size=page_size, total=result.total),
+    )
 
 
 @router.get("/api/extraction-runs/{extraction_run_id}/facts", response_model=FactListResponse)

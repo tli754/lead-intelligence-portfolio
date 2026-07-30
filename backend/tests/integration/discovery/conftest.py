@@ -18,10 +18,12 @@ from httpx import ASGITransport, AsyncClient
 from app.modules.companies.domain.enums import ProcessingStatus
 from app.modules.discovery.api.router import (
     get_company_discovery_gateway,
+    get_discovery_queue,
     get_discovery_repository,
     get_http_discovery_client,
     router,
 )
+from app.modules.discovery.application.website_discovery_service import WebsiteDiscoveryService
 from app.modules.discovery.domain.exceptions import (
     CompanyNotFoundForDiscoveryError,
     DisallowedHostError,
@@ -34,7 +36,11 @@ from app.modules.discovery.domain.http_client import (
     HttpDiscoveryClient,
 )
 from app.modules.discovery.domain.models import DiscoveredUrl, DiscoveryRun
-from app.modules.discovery.domain.repository import DiscoveredUrlPage, DiscoveryRepository
+from app.modules.discovery.domain.repository import (
+    DiscoveredUrlPage,
+    DiscoveryRepository,
+    DiscoveryRunPage,
+)
 
 
 class FakeCompanyDiscoveryGateway(CompanyDiscoveryGateway):
@@ -79,6 +85,20 @@ class FakeDiscoveryRepository(DiscoveryRepository):
         if not candidates:
             return None
         return max(candidates, key=lambda run: run.created_at)
+
+    async def list_runs(
+        self,
+        *,
+        status=None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> DiscoveryRunPage:
+        items = sorted(self._runs.values(), key=lambda run: run.created_at, reverse=True)
+        if status is not None:
+            items = [run for run in items if run.status == status]
+        total = len(items)
+        start = (page - 1) * page_size
+        return DiscoveryRunPage(items=items[start : start + page_size], total=total)
 
     async def save_discovered_urls(self, urls: list[DiscoveredUrl]) -> list[DiscoveredUrl]:
         for url in urls:
@@ -183,17 +203,36 @@ class FakeHttpDiscoveryClient(HttpDiscoveryClient):
         raise DisallowedHostError(url, reason="sitemap not configured in fake")
 
 
+class NoOpQueue:
+    """A `get_discovery_queue` override for tests in this directory that
+    don't care about *what* gets enqueued (only about HTTP response shape
+    or service-level behavior) — records calls without ever touching a
+    real Redis connection. `test_router_rq_enqueue.py` uses its own
+    locally-defined `FakeQueue` instead, where the enqueue call's exact
+    arguments are the thing under test."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def enqueue_call(self, **kwargs) -> None:
+        self.calls.append(kwargs)
+
+
 def _build_app(
     *,
     company_gateway: CompanyDiscoveryGateway,
     discovery_repository: DiscoveryRepository,
     http_client: HttpDiscoveryClient,
+    queue: object | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_company_discovery_gateway] = lambda: company_gateway
     app.dependency_overrides[get_discovery_repository] = lambda: discovery_repository
     app.dependency_overrides[get_http_discovery_client] = lambda: http_client
+    app.dependency_overrides[get_discovery_queue] = (
+        lambda: queue if queue is not None else NoOpQueue()
+    )
     return app
 
 
@@ -212,10 +251,27 @@ def http_client() -> FakeHttpDiscoveryClient:
     return FakeHttpDiscoveryClient()
 
 
-ClientFactory = Callable[
-    [CompanyDiscoveryGateway, DiscoveryRepository, HttpDiscoveryClient],
-    AbstractAsyncContextManager[AsyncClient],
-]
+@pytest.fixture
+def discovery_service(
+    company_gateway: FakeCompanyDiscoveryGateway,
+    discovery_repository: FakeDiscoveryRepository,
+    http_client: FakeHttpDiscoveryClient,
+) -> WebsiteDiscoveryService:
+    """A `WebsiteDiscoveryService` built from the exact same fakes the
+    `client` fixture's app is wired to (via `app.dependency_overrides`).
+    Since Task 020, the HTTP router only calls `enqueue_discovery_run` —
+    tests that need a *completed* run (e.g. to assert on response
+    serialization) call `execute_discovery_run` on this fixture directly
+    afterward, exactly mirroring what a real RQ worker does via
+    `infrastructure/rq_jobs.py`'s job wrapper."""
+    return WebsiteDiscoveryService(
+        company_gateway=company_gateway,
+        discovery_repository=discovery_repository,
+        http_client=http_client,
+    )
+
+
+ClientFactory = Callable[..., AbstractAsyncContextManager[AsyncClient]]
 
 
 @pytest.fixture
@@ -225,11 +281,14 @@ def client_factory() -> ClientFactory:
         company_gateway: CompanyDiscoveryGateway,
         discovery_repository: DiscoveryRepository,
         http_client: HttpDiscoveryClient,
+        *,
+        queue: object | None = None,
     ) -> AsyncGenerator[AsyncClient, None]:
         app = _build_app(
             company_gateway=company_gateway,
             discovery_repository=discovery_repository,
             http_client=http_client,
+            queue=queue,
         )
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://testserver") as test_client:

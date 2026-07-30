@@ -39,6 +39,9 @@ class FakeCrawlRepository(CrawlRepository):
     async def list_runs_by_company(self, company_id, *, page=1, page_size=20):
         raise NotImplementedError
 
+    async def list_runs(self, *, status=None, page=1, page_size=20):
+        raise NotImplementedError
+
     async def find_active_run(self, company_id, idempotency_key):
         raise NotImplementedError
 

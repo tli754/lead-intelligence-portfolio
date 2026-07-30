@@ -3,9 +3,10 @@
 Pure, I/O-free, and stdlib-only (`html.parser.HTMLParser`) — no new
 dependency was added for this, and no FastAPI/MongoDB import. Handles
 ordinary HTML table markup (`<table>`/`<thead>`/`<tbody>`/`<tr>`/`<td>`),
-not the Vaadin custom-grid markup `app/domains/companies/parsing.py`
-parses for the (different) paste-in-importer feature — StoreLeads
-table copies are plain HTML tables, not a virtualized custom-element grid.
+not the Vaadin custom-grid markup — StoreLeads' other export shape,
+handled by the sibling `vaadin_grid_parser.py` in this same module and
+dispatched to by `format_detector.py` — since StoreLeads table copies
+are plain HTML tables, not a virtualized custom-element grid.
 """
 
 import re
